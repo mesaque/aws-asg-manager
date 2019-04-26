@@ -1,6 +1,6 @@
 import boto3,sys,time,base64
 
-PROJECT_NAME   = '[your-key-name]'
+PROJECT_NAME   = 'YOUR-KEY-NAME'
 lconfiguration = boto3.client('autoscaling',region_name = 'us-east-1')
 ec2            = boto3.client('ec2')
 ec2resource    = boto3.resource('ec2')
@@ -96,6 +96,32 @@ def get_lc(lc_name):
         )
         return _lcs['LaunchConfigurations'][0]
 
+def clean_lc(asg_name, lc_name_prefixy):
+    _asg = lconfiguration.describe_auto_scaling_groups(
+            AutoScalingGroupNames=[
+                asg_name,
+            ]
+        )
+    current_asg = _asg['AutoScalingGroups'][0]['LaunchConfigurationName']
+
+    _lcs = lconfiguration.describe_launch_configurations()
+    for lcs in _lcs['LaunchConfigurations']:
+        image_id = lcs['ImageId']
+        lc_name = lcs['LaunchConfigurationName']
+        if lc_name == current_asg:
+            continue
+        if lc_name.find(lc_name_prefixy+"ami-"):
+            continue
+        
+        lconfiguration.delete_launch_configuration(LaunchConfigurationName=lc_name)
+        image_rsc = ec2resource.Image(image_id)
+        snapshot_id = image_rsc.block_device_mappings[0]['Ebs']['SnapshotId']
+        ec2.deregister_image(ImageId=image_id)
+        time.sleep(20)
+        ec2.delete_snapshot(SnapshotId=snapshot_id,DryRun=False)
+    
+    return ''
+
 def lambda_handler(event, context):
 
     instance = get_instance( {'Name':'tag:instance', 'Values':['admin']} )
@@ -122,7 +148,11 @@ def lambda_handler(event, context):
 
     model_lc = get_lc(PROJECT_NAME+'-LC-MODEL')
 
-    ami_id  = image['ImageId']
-    lc_name = PROJECT_NAME+"-LC-" + ami_id
-    lc      = create_lc(model_lc, ami_id, lc_name)
-    asg     = update_asg(PROJECT_NAME+'-ASG',lc_name)
+    asg_prefix      = PROJECT_NAME+'-ASG'
+    lc_name_prefixy = PROJECT_NAME+"-LC-"
+    ami_id          = image['ImageId']
+    lc_name         = lc_name_prefixy + ami_id
+    lc              = create_lc(model_lc, ami_id, lc_name)
+    asg             = update_asg(asg_prefix,lc_name)
+
+    clean_lc(asg_prefix, lc_name_prefixy)
